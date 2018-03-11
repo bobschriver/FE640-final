@@ -9,16 +9,18 @@ from scipy.spatial import ConvexHull
 from scipy.spatial.distance import euclidean
 
 class Cut():
-    def __init__(self, availible_tree_points, tree_point_heights, tree_distances):
+    def __init__(self, availible_tree_points, tree_point_heights, tree_kdtree, landing_points_kdtree):
         self.availible_tree_points = availible_tree_points
         self.tree_point_heights = tree_point_heights
-        self.tree_distances = tree_distances
+        self.tree_distances = tree_kdtree
+        
+        self.landing_points_kdtree = landing_points_kdtree
         
         self.cut_tree_points = set()
         self.convex_hull = None
-        self.convex_hull_kdtree = None
         
-        self.cut_landing_distance = sys.maxsize
+        self.closest_landing_point = (sys.maxsize, sys.maxsize)
+        self.cost = sys.maxsize
         
         self.add_cluster(self.availible_tree_points.pop())
           
@@ -32,7 +34,8 @@ class Cut():
         else:
             self.convex_hull.add_points(points)
             
-        self.convex_hull_kdtree = KDTree(self.convex_hull.points)
+        self.update_closest_landing_point()
+            
     
     def add_cluster(self, seed_point, radius=150.0):
         start = time.time()
@@ -45,8 +48,11 @@ class Cut():
         self.cut_tree_points |= added_tree_points
         #print("Finding availible points {} seconds".format(time.time() - start))
         
+        #Its possible to update the cost twice here
         self.update_convex_hull(list(added_tree_points))
         #print("Updating convex hull {} seconds".format(time.time() - start))
+        
+        self.update_cost()
     
     def add_neighbor_cluster(self):
         source_tree = self.cut_tree_points.pop()
@@ -54,89 +60,156 @@ class Cut():
         
         self.add_cluster(source_tree)
     
-    def compute_hull_distance(self, landing_points):
-        #Don't have any landing points yet
-        if landing_points_kdtree is None:
-            return self.cut_landing_distance
-        
+    def update_landing_points_kdtree(self, landing_points_kdtree):
+        self.landing_points_kdtree = landing_points_kdtree
+        self.update_closest_landing_point()
+    
+    def update_closest_landing_point(self):
         start = time.time()
-
-        min_hull_landing_distances, _ = self.convex_hull_kdtree.query(landing_points_kdtree.data)
-        self.cut_landing_distance = min(min_hull_landing_distances)
+        min_landing_distances, min_landing_indeces = self.landing_points_kdtree.query(self.convex_hull.points)
+        min_landing_distances_indeces = zip(min_landing_distances, min_landing_indeces)     
+        _, min_landing_index = min(min_landing_distances_indeces, key=lambda distance_index: distance_index[0])
         
-        #print("Compute hull distance {} seconds".format(time.time() - start))
+        new_landing_point = tuple(self.landing_points_kdtree.data[min_landing_index])  
+        print("Finding new landing {}".format(time.time() - start))
         
-        return self.cut_landing_distance
-    
-    #67$ per processed ton?
+        
+        if new_landing_point != self.closest_landing_point:
+            self.closest_landing_point = new_landing_point
+            self.update_cost()
+        print("Updating Cost {}".format(time.time() - start))
+            
+    # Feet to Cubic Feet
+    def height_to_merchantable_volume(self, height):
+        return height * 0.60 - 9.87
     
     # Feet to Cubic Feet
-    def height_to_merchantable_volume(height):
-        return height * 0.37
-    
-    def height_to_dbh(height):
-        return height * 0.375 + 2.25
-    
-    # Feet to Cubic Feet
-    def height_to_volume(height)
+    def height_to_volume(self, height):
         return height * 0.87
     
-    # Cubic Feet to Pounds
-    def volume_to_green_weight(volume):
-        return volume * 50
-           
-    def compute_cost(self, landing_points):
-        tree_merchantable_value = 0
+    # Cubic Feet to tonne
+    # Water pounds per cubic foot = 62.4
+    # Juniper pounds per sq foot @ 12% water = 31
+    # 0.12 * 62.4 + 0.88 * x = 31
+    # x = 26.71
+    # Green Weight = 65% water
+    # 0.65 * 64.4 + 0.35 * 26.71 = 49.91
+    def volume_to_green_weight(self, volume):
+        return (volume * 49.91) * 0.000454
+    
+    # Assume a DBH of 20 for all trees with no merchantable timber
+    # tonne to dollars
+    def felling_cost_no_merchantable(self, weight):
+        return weight * 12
+    
+    # tonne to dollars
+    def felling_cost(self, weight):
+        return weight * 10
+    
+    # tonne to dollars
+    def processing_cost(self, weight):
+        return weight * 15
+        
+    # tonne/feer to dollars
+    def skidding_cost(self, weight, distance):
+        return weight * distance * 0.061 + weight * 20
+    
+    # dollars
+    def felling_value(self):
+        return 3
+    
+    # cubic feet to dollars
+    def harvest_value(self, merchantable_volume):
+        # convert cubic feet to board feet
+        return (merchantable_volume * 12) * 1.25
+    
+    
+    # Should split this into a update processing cost, and update skidding cost
+    def update_cost(self):
+        cut_value = 0
+        
         for tree_point in self.cut_tree_points:
-            tree_merchantable_value += tree_point_heights[tree_point]
+            tree_height = tree_point_heights[tree_point]        
+            tree_merchantable_volume = self.height_to_merchantable_volume(tree_height)
+            tree_volume = self.height_to_volume(tree_height)
+            tree_green_weight = self.volume_to_green_weight(tree_volume)
+            tree_distance = euclidean(tree_point, self.closest_landing_point)
             
-        num_trees = len(self.cut_tree_points)
-        
-        cut_area = self.convex_hull.volume
-        
-        hull_distance = self.compute_hull_distance(landing_points)    
-        
-        return (tree_merchantable_value, num_trees, cut_area, hull_distance)                
+            tree_value = self.felling_value()
+            #print("Felling Value {}".format(tree_value))
+            
+            if tree_merchantable_volume < 0:
+                tree_value -= self.felling_cost_no_merchantable(tree_green_weight)
+                #print("Felling Cost (no merchantable) {}".format(tree_value))
+            else:
+                tree_value -= self.felling_cost(tree_green_weight)
+                #print("Felling Cost {}".format(tree_value))
+                tree_value -= self.processing_cost(tree_green_weight)
+                #print("Processing Cost {}".format(tree_value))
+                tree_value -= self.skidding_cost(tree_green_weight, tree_distance)
+                #print("Skidding Cost {}".format(tree_value))
+                
+                tree_value += self.harvest_value(tree_merchantable_volume)
+                #print("Harvest Value {}".format(tree_value))
+            
+            cut_value += tree_value
+            #print("Cut Value {}\n".format(cut_value))
+            
+        self.cost = cut_value
 
 class Landings():
     def __init__(self):
         self.landing_points = []
+        self.landing_points_kdtree = None
+        self.cost = 0
     
     def add_landing(self, point):
         self.landing_points.append(point)
+        self.landing_points_kdtree = KDTree(self.landing_points)
+        
+        self.cost -= 1000
     
-    def compute_cost(self):
-        cost = 0
-        for landing_point in self.landing_points:
-            cost += 1000
-        return cost
         
  
 class Solution():
-    def __init__(self):
+    def __init__(self, availible_tree_points, tree_point_heights, tree_kdtree):
+        self.availible_tree_points = availible_tree_points
+        self.tree_point_heights = tree_point_heights
+        self.tree_kdtree = tree_kdtree
+    
         self.cuts = []
         self.landings = Landings()
     
     def add_tree_cluster_to_random_cut(self):
         random.choice(self.cuts).add_neighbor_cluster()
     
-    def add_cut(self, cut):
-        self.cuts.append(cut)
+    def add_cut(self):
+        self.cuts.append(
+            Cut(self.availible_tree_points, 
+                self.tree_point_heights, 
+                self.tree_kdtree, 
+                self.landings.landing_points_kdtree)
+            )
     
     def add_landing_point(self, landing_point):
         self.landings.add_landing(landing_point)
+        for cut in self.cuts:
+            cut.update_landing_points_kdtree(self.landings.landing_points_kdtree)
     
     def compute_cost(self):
         cost = 0
         
-        for cut in self.cuts:
-            print("Cuts cost {}".format(cut.compute_cost(self.landings.landing_points)))
+        for i,cut in enumerate(self.cuts):
+            print("Cut {} cost {}".format(i, cut.cost))
+            cost += cut.cost
             
-        print("Landing Cost {}".format(self.landings.compute_cost()))
+        cost += self.landings.cost
+        
+        return cost
 
             
-tree_points_path = os.path.join("D:\\", "crown_location_height", "Pine Creek", "44120-G2", "tree_points", "44120-G2-tree_points.csv")
-road_points_path = os.path.join("D:\\", "roads", "44120_G2", "44120_G2_road_points.csv")
+tree_points_path = os.path.join("44120-G2_tree_points.csv")
+road_points_path = os.path.join("44120_G2_road_points.csv")
 
 tree_points = []
 tree_point_heights = {}
@@ -172,34 +245,40 @@ with open(road_points_path) as road_points_file:
     
         road_points.append((x, y))
     
+availible_road_points = set(road_points)
+    
+initial_solution = Solution(availible_tree_points, tree_point_heights, tree_kdtree)
 
-initial_solution = Solution()
-cut = Cut(availible_tree_points, tree_point_heights, tree_kdtree)
-initial_solution.add_cut(cut)
+inital_landing = availible_road_points.pop()
+initial_solution.add_landing_point(inital_landing)
+
+initial_solution.add_cut()
+
 
 for i in range(100):
     choice = random.random()
-    
+    start = time.time()
     if choice < 0.33:
         print("Adding Cut")
-        cut = Cut(availible_tree_points, tree_point_heights, tree_kdtree)
-        initial_solution.add_cut(cut)
+        initial_solution.add_cut()
+        print("Time {}".format(time.time() - start))
     elif choice < 0.66:
         print("Adding Cluster")
         initial_solution.add_tree_cluster_to_random_cut()
+        print("Time {}".format(time.time() - start))
     elif choice < 1.0:
         print("Adding Landing")
         road_point = random.choice(road_points)
         initial_solution.add_landing_point(road_point)
+        print("Time {}".format(time.time() - start))
 
-    #road_point = random.choice(road_points)
-    #initial_solution.add_landing_point(road_point)
+
     #road_point = random.choice(road_points)
     #initial_solution.add_landing_point(road_point)
     #cut = Cut(availible_tree_points, tree_point_heights, tree_kdtree)
     #initial_solution.add_cut(cut)
 
-    initial_solution.compute_cost()
+    print("Solution cost {}".format(initial_solution.compute_cost()))
     print("")
         
         
