@@ -7,7 +7,6 @@ import time
 import numpy as np
 
 from scipy.spatial import KDTree
-from scipy.spatial import ConvexHull
 from scipy.spatial.distance import euclidean
 
 from cuts import Cuts
@@ -53,9 +52,9 @@ class Solver():
         return self.solution
              
             
-tree_points_path = os.path.join("44120-G2_tree_points.csv")
-road_points_path = os.path.join("44120_G2_road_points.csv")
-
+tree_points_path = os.path.join("/Users", "schriver", "projects", "FE640-final", "44120_g2_trees.txt")
+road_points_path = os.path.join("/Users", "schriver", "projects", "FE640-final", "44120_g2_roads.txt")
+       
 tree_points = []
 tree_weights = []
 
@@ -64,14 +63,17 @@ with open(tree_points_path) as tree_points_file:
     tree_points_header = next(tree_points_reader)
     
     for tree_point_line in tree_points_reader:
-        _, _, x_str, y_str, height_str = tree_point_line
+        _, _, _, _, elev_str, basin_str, x_str, y_str, height_str = tree_point_line
         x = float(x_str)
         y = float(y_str)
         
         height = float(height_str)
         weight = height * 0.82 * 49.91 * 0.000454
         
-        tree_points.append((x, y))
+        elevation = float(elev_str)
+        basin = int(basin_str) * 500
+
+        tree_points.append((x, y, basin))
         tree_weights.append(weight)
 
 tree_points_arr = np.array(tree_points)
@@ -85,12 +87,15 @@ with open(road_points_path) as road_points_file:
     road_points_header = next(road_points_reader)
     
     for road_point_line in road_points_reader:
-        _, _, x_str, y_str = road_point_line
+        _, _, _, x_str, y_str, elev_str, basin_str = road_point_line
     
         x = float(x_str)
         y = float(y_str)
+
+        elevation = float(elev_str)
+        basin = int(basin) * 500
     
-        road_points.append((x, y))
+        road_points.append((x, y, basin))
 
 
 landing_point_manager = PointManager(set(()), set(road_points))        

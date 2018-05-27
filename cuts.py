@@ -204,7 +204,6 @@ class Cuts():
         return self.values[cut_index]
     
     def compute_value(self):
-        start = time.time()
         total_value = 0
         for i, cut in enumerate(self.cuts):
             total_value += self.get_cut_value(i)
@@ -218,7 +217,6 @@ class Cuts():
         pass
         
     def copy_writable(self):
-        start_time = time.time()
         writable =  Cuts(self.tree_points, None, None, None)
         writable.cuts = copy.deepcopy(self.cuts)
         writable.values = copy.copy(self.values)
