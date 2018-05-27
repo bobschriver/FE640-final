@@ -56,16 +56,40 @@ class Cuts():
         cut = self.cuts[source_cut_index]
         
         # Three is the minimum size cut to split
-        if cut.size < 3:
+        if cut.size < 4:
             return
         
-        # Dont want to split such that we get a zero size array
-        split_index = np.random.randint(1, cut.size - 1)
+        chord_first_coordinate, chord_second_coordinate = np.random.choice(cut, size=(2, 1), replace=False)
         
-        self.cuts[source_cut_index] = cut[:split_index]
+        x1, y1 = self.tree_points[chord_first_coordinate[0]]
+        x2, y2 = self.tree_points[chord_second_coordinate[0]]
+        
+        #print("X1 {} Y1 {} X2 {} Y2 {}".format(x1, y1, x2, y2))
+        
+        cut_side_one = []
+        cut_side_two = []
+        for point_index in cut:
+            x, y = self.tree_points[point_index]
+            
+            #print("X {} Y {}".format(x, y))
+            
+            d = (x - x1)*(y2 - y1) - (y - y1)*(x2 - x1)
+            
+            if d <= 0:
+                cut_side_one.append(point_index)
+            else:
+                cut_side_two.append(point_index)
+        
+        #print(cut_side_one)
+        #print(cut_side_two)
+        
+        if len(cut_side_one) == 0 or len(cut_side_two) == 0:
+            return
+        
+        self.cuts[source_cut_index] = np.array(cut_side_one, dtype=np.int32)
         self.update_cached[source_cut_index] = True
         
-        self.init_cut(cut[split_index:])
+        self.init_cut(np.array(cut_side_two, dtype=np.int32))
     
     def join_random_cuts(self):
         # I think I should reimagine this, potentially join closest cuts?
@@ -93,7 +117,7 @@ class Cuts():
         self.init_cut(cut)
 
         cut_index = len(self.cuts) - 1        
-        self.add_cluster(cut_index, source_point, random.randint(100, 500))
+        self.add_cluster(cut_index, source_point, random.randint(100, 300))
         
         return cut_index
 
@@ -185,6 +209,7 @@ class Cuts():
             centroid = (np.sum(cut_tree_points[:, 0]) / cut_tree_points_length, np.sum(cut_tree_points[:, 1]) / cut_tree_points_length)
         
             closest_landing_point_distance, closest_landing_point_index = self.landing_point_manager.active_points_kdtree.query([centroid], eps=1.0)
+            
             closest_landing_point = self.landing_point_manager.active_points_kdtree.data[closest_landing_point_index][0]
             
             cut_tree_distances = np.linalg.norm(cut_tree_points - closest_landing_point, axis=1)
@@ -219,7 +244,7 @@ class Cuts():
         
     def copy_writable(self):
         start_time = time.time()
-        writable =  Cuts(self.tree_points, None, None, None)
+        writable =  Cuts(self.tree_points, None, self.tree_weights, None)
         writable.cuts = copy.deepcopy(self.cuts)
         writable.values = copy.copy(self.values)
         
@@ -242,7 +267,13 @@ class Cuts():
                 hull_points = [tuple(cut_tree_points_list[index]) for index in hull.vertices]
         
                 output_dict["hull_points"] = hull_points
-        
+
+            cut_tree_weights = self.tree_weights[cut]
+            output_dict["harvest_weight"] = np.sum(cut_tree_weights[cut_tree_weights >= 0.3])
+            output_dict["non_harvest_weight"] = np.sum(cut_tree_weights[cut_tree_weights < 0.3])
+                
+            output_dict["num_trees"] = cut.size
+            
             filename = "{}.json".format(cut_index)
        
             with open(os.path.join(cuts_output_dir, filename), 'w') as fp:
