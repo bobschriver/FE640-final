@@ -20,6 +20,9 @@ class PointManager():
         return self.active_points & points
 
     def get_random_inactive(self):
+        if len(self.inactive_points) < 1:
+            return None
+    
         point = self.inactive_points.pop()
         self.inactive_points.add(point)
         
@@ -30,17 +33,17 @@ class PointManager():
         self.inactive_points -= points
         
         for callback in self.active_change_callbacks:
-            callback()
+            callback(self.active_points)
     
     def deactivate_points(self, points):
         self.active_points -= points
         self.inactive_points |= points
         
         for callback in self.active_change_callbacks:
-            callback()
+            callback(self.active_points)
         
-    def update_active_points_kdtree(self):
-        self.active_points_kdtree = KDTree(list(self.active_points))
+    def update_active_points_kdtree(self, active_points):
+        self.active_points_kdtree = KDTree(list(active_points))
         
     def __copy__(self):
         new_point_manager = PointManager(copy.copy(self.active_points), copy.copy(self.inactive_points))

@@ -19,14 +19,32 @@ class Landings():
         ]
         
         self.forward_probabilities = [
-            0.05,
-            0.02
+            0.15,
+            0.03
         ]
         
         self.reverse_map = {
             self.add_random_landing: self.remove_landing,
             self.remove_random_landing: self.add_landing
         }
+        
+        self.max_iterations = 100000
+
+        self.starting_forward_probabilities = [
+            0.15,
+            0.03
+        ]
+
+        self.ending_forward_probabilites = [
+            0.15,
+            0.15
+        ]
+
+    def step(self):
+        for i in range(len(self.forward_options)):
+            self.forward_probabilities[i] = self.forward_probabilities[i] + \
+                (self.ending_forward_probabilites[i] - self.starting_forward_probabilities[i]) * \
+                (1 / self.max_iterations)
 
     def add_landing(self, landing):
         #print("Adding Landing {} {}".format(landing, len(self.landings)))
@@ -36,6 +54,9 @@ class Landings():
  
     def add_random_landing(self):
         landing_point = self.landing_point_manager.get_random_inactive()
+        
+        if landing_point is None:
+            return None
         
         landing = Landing(landing_point)
         
@@ -65,7 +86,9 @@ class Landings():
     
     def copy_writable(self):
         writable = Landings(None)
-        writable.landings = copy.deepcopy(self.landings)   
+        writable.landings = copy.deepcopy(self.landings)
+
+        writable.forward_probabilities = copy.copy(self.forward_probabilities)
         
         return writable
     
@@ -81,3 +104,9 @@ class Landings():
         
         with open(os.path.join(landings_output_dir, "landings.json"), 'w') as fp:
             json.dump(landings_dict, fp)
+
+    def __str__(self):
+        return "{} Active Landings".format(len(self.landings))
+
+    def __repr__(self):
+        return self.__str__()

@@ -33,6 +33,9 @@ class Solution():
         if self.reverse_queue:
             self.reverse_queue.clear()
         
+        for component in self.components:
+            component.step()
+        
         for i in range(1):
             chose_option = False
             while not chose_option:
@@ -64,3 +67,14 @@ class Solution():
             writeable.add_component(component.copy_writable())
         
         return writeable
+        
+    def __str__(self):
+        string = ""
+
+        for component in self.components:
+            string += str(component) + "\t"
+        
+        return string
+
+    def __repr__(self):
+        return self.__str__()

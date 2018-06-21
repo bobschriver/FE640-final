@@ -1,7 +1,7 @@
 class Landing():
     def __init__(self, point):
         self.point = point
-        self.value = -2000
+        self.value = -500
     
     def compute_value(self):
         return self.value
