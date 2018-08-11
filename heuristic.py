@@ -6,9 +6,10 @@ class SimulatedAnnealing():
     def __init__(self):
         self.base_value = -100000.0
         self.best_value = -100000.0
+
+        self.iterations_since_improvement = 0
         
-        
-    def configure(self, temperature=0.25, min_temperature=0.0001, alpha=0.99, repetitions=100):
+    def configure(self, temperature=0.25, min_temperature=0.0001, alpha=0.99, repetitions=200):
         self.temperature = temperature
         self.repetitions = repetitions
         self.alpha = alpha
@@ -16,17 +17,32 @@ class SimulatedAnnealing():
         
     def set_base_solution(self, solution):
         solution_value = solution.compute_value()
-        self.base_value = solution_value
-     
-        self.best_value = solution_value
+        
         self.base_solution = solution
+        self.base_value = solution_value
+
         self.final_solution = self.base_solution.copy_writable()
+
+        if self.base_value > self.best_value:
+            self.best_value = self.base_value
+            self.iterations_since_improvement = 0
+        else:
+            self.iterations_since_improvement += 1
 
     def continue_solving(self, iterations):
         if iterations % self.repetitions == 0:
             self.temperature = self.temperature * self.alpha
         
-        return self.temperature > self.min_temperature
+        continue_solving = True
+
+        if self.temperature < self.min_temperature:
+            print("Reached minimum temperature {}".format(iterations))
+            continue_solving = False
+        elif self.iterations_since_improvement >= 10000:
+            print("Have not improved in 10000 iterations {}".format(iterations))
+            continue_solving = False
+
+        return continue_solving
     
     def accept_solution(self, neighbor_solution):
         neighbor_solution_value = neighbor_solution.compute_value()

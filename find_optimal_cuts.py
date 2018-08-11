@@ -3,6 +3,7 @@ import csv
 import random
 import sys
 import time
+import json
 
 import numpy as np
 
@@ -26,6 +27,10 @@ class Solver():
     def solve(self):
         iterations = 0
         start_time = time.time()
+
+        iteration_fitnesses = {}
+        iteration_fitnesses["current_value"] = {}
+        iteration_fitnesses["best_value"] = {}
         while self.heuristic.continue_solving(iterations):
             iterations += 1
 
@@ -47,17 +52,12 @@ class Solver():
             if iterations % 1000 == 0:
                 print("{} Curr Value {} Base Value {} Best Value {} seconds {}".format(iterations, self.solution.compute_value(), self.heuristic.base_value, self.heuristic.best_value, time.time() - start_time))
                 print("Curr {}\tFinal {}".format(self.solution, self.heuristic.final_solution))
+                iteration_fitnesses["current_value"][iterations] = self.heuristic.base_value
+                iteration_fitnesses["best_value"][iterations] = self.heuristic.best_value
                 start_time = time.time()
             
-            #if iterations % 10000 == 0:
-            #    if not os.path.exists(str(iterations)):
-            #        os.makedirs(str(iterations))
-            #    
-            #    self.heuristic.final_solution.export(str(iterations))
-                
 
-        #self.heuristic.final_solution.export("final")
-        return self.heuristic.final_solution
+        return (self.heuristic.final_solution, iteration_fitnesses)
              
 
 tree_points_path = os.path.join(".", "44120_g2_trees.txt")
@@ -171,12 +171,13 @@ for j in range(num_trials):
     
     solver = Solver(heuristic, initial_solution)
 
-    final_solution = solver.solve()
+    final_solution, iteration_fitnesses = solver.solve()
 
     solution_dir = os.path.join(".", heuristic_type, "{}_{}".format(j, int(final_solution.compute_value())))
-    
     os.makedirs(solution_dir)
-    final_solution.export(solution_dir)    
+
+    final_solution.export(solution_dir)
+    json.dump(iteration_fitnesses, open(os.path.join(solution_dir, "iteration_fitnesses.json"), "w"), indent=2)
         
 
     
