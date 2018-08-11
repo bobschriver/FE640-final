@@ -19,8 +19,8 @@ class Landings():
         ]
         
         self.forward_probabilities = [
-            0.15,
-            0.03
+            0.1,
+            0.1
         ]
         
         self.reverse_map = {
@@ -28,16 +28,16 @@ class Landings():
             self.remove_random_landing: self.add_landing
         }
         
-        self.max_iterations = 100000
+        self.max_iterations = 100000.0
 
         self.starting_forward_probabilities = [
-            0.15,
-            0.03
+            0.1,
+            0.1
         ]
 
         self.ending_forward_probabilites = [
-            0.15,
-            0.15
+            0.1,
+            0.1
         ]
 
     def step(self):

@@ -5,6 +5,8 @@ import time
 import copy
 import json
 
+from enum import Enum
+
 import numpy as np
 
 from scipy.spatial import KDTree
@@ -12,6 +14,11 @@ from scipy.spatial.distance import euclidean
 from scipy.spatial import ConvexHull
 
 from landings import Landings
+
+class ClosestLandingState(Enum):
+    KNOWN = 1 # Closest landing point is known and active
+    UNKNOWN = 2 # Closest landing point is unknown
+    ORPHANED = 3 # Closest landing point is inactive
 
 class Cuts():
     def __init__(self, tree_points, tree_points_kdtree, tree_weights, tree_basins, landing_point_manager):
@@ -27,9 +34,13 @@ class Cuts():
         
         self.cuts = []
         self.values = []
+
         self.update_cached = []
-        
-        self.closest_landing_points = []
+        self.orphaned = []
+
+        self.closest_landings = []
+        self.landing_distances = []
+        self.closest_landing_states = []
         
         self.felling_values = []
         self.harvest_values = []
@@ -42,36 +53,41 @@ class Cuts():
             self.add_random_cut,
             self.remove_random_cut,
             self.add_random_cluster,
-            self.split_random_cut
+            self.split_random_cut,
+            self.remove_orphaned_cuts,
         ]
         
         self.forward_probabilities = [
-            0.8,
+            1.0,
             0.5,
             0.25,
-            0.25
+            0.0,
+            0.0001,
         ]
         
         self.reverse_map = {
             self.add_random_cut: self.remove_cut,
             self.remove_random_cut: self.init_cut,
-            self.add_random_cluster: self.remove_cluster
+            self.add_random_cluster: self.remove_cluster,
+            self.split_random_cut: self.join_cuts,
         }
         
-        self.max_iterations = 100000
+        self.max_iterations = 100000.0
         
         self.starting_forward_probabilities = [
-            0.8,
-            0.8,
+            1.0,
+            0.5,
             0.25,
-            0.5
+            0.0,
+            0.0001,
         ]
 
         self.ending_forward_probabilites = [
+            1.0,
             0.5,
-            0.8,
             0.25,
-            0.5,
+            0.0,
+            0.0001,
         ]
 
     def step(self):
@@ -82,10 +98,15 @@ class Cuts():
             #print("{} {}".format(i, self.forward_probabilities[i]))
 
     def split_random_cut(self):
+        #print("Split Random Cut")
         if len(self.cuts) <= 1:
             return
     
         source_cut_index = random.randint(0, len(self.cuts) - 1)
+        if self.closest_landing_states[source_cut_index] == ClosestLandingState.ORPHANED:
+            #print("Cannot split orphaned cut")
+            return
+
         cut = self.cuts[source_cut_index]
         
         # Three is the minimum size cut to split
@@ -106,7 +127,7 @@ class Cuts():
             
             #print("X {} Y {}".format(x, y))
             
-            d = (x - x1)*(y2 - y1) - (y - y1)*(x2 - x1)
+            d = (x-x1) * (y2-y1) - (y-y1) * (x2-x1)
             
             if d <= 0:
                 cut_side_one.append(point_index)
@@ -120,10 +141,27 @@ class Cuts():
             return
         
         self.cuts[source_cut_index] = np.array(cut_side_one, dtype=np.int32)
+
         self.update_cached[source_cut_index] = True
+        self.closest_landing_states[source_cut_index] = ClosestLandingState.UNKNOWN
         
-        self.init_cut(np.array(cut_side_two, dtype=np.int32))
+        split_cut_index = self.init_cut(np.array(cut_side_two, dtype=np.int32))
+
+        return (source_cut_index, split_cut_index)
     
+    def join_cuts(self, cut_indeces):
+        first_cut_index, second_cut_index = cut_indeces
+
+        first_cut = self.cuts[first_cut_index]
+        second_cut = self.cuts[second_cut_index]
+
+        self.remove_cut(second_cut_index)
+        self.remove_cut(first_cut_index)
+        
+        joined_cut = np.concatenate([first_cut, second_cut])
+
+        self.init_cut(joined_cut)
+
     def join_random_cuts(self):
         # I think I should reimagine this, potentially join closest cuts?
         if len(self.cuts) <= 2:
@@ -142,27 +180,33 @@ class Cuts():
         
     
     def add_random_cut(self):
+        #print("Add Random Cut")
         inactive_tree_indeces = np.nonzero(self.inactive)[0]
+        if inactive_tree_indeces.size == 0:
+            return None
+
         source_index = np.random.choice(inactive_tree_indeces)
-        source_point = self.tree_points[source_index]
         
         cut = np.array([], dtype=np.int32)
         self.init_cut(cut)
 
         cut_index = len(self.cuts) - 1        
-        self.add_cluster(cut_index, source_point, random.randint(100, 300))
+        self.add_cluster(cut_index, source_index, random.randint(100, 300))
         
         return cut_index
 
     def init_cut(self, cut):
         #print("Init Cut Inactive Length {}".format(np.nonzero(self.inactive)[0].shape))
+        cut_index = len(self.cuts)
         self.cuts.append(cut)
         
         self.values.append(0)
         self.update_cached.append(True)
-        
-        self.closest_landing_points.append((sys.maxsize, sys.maxsize, sys.maxsize))
-        
+
+        self.closest_landings.append((sys.maxsize, sys.maxsize, sys.maxsize))
+        self.landing_distances.append(sys.maxsize)
+        self.closest_landing_states.append(ClosestLandingState.UNKNOWN)
+
         self.felling_values.append(0)
         self.harvest_values.append(0)
         self.equipment_moving_costs.append(0)
@@ -171,17 +215,32 @@ class Cuts():
         self.skidding_costs.append(0)
         
         self.inactive[cut] = False
-        #print("Init Cut Inactive Length {}".format(np.nonzero(self.inactive)[0].shape))
+
+        return cut_index
+
     
-    def add_cluster(self, cut_index, source_point, radius=100):
+    def add_cluster(self, cut_index, source_index, radius=100):
         #print("Add Cluster Cut Length {} Inactive Length {}".format(self.cuts[cut_index].shape, np.nonzero(self.inactive)[0].shape))
-    
-        start = time.time()
+        source_point = self.tree_points[source_index]
+        source_basin = self.tree_basins[source_index]
+
         tree_cluster_indeces = self.tree_points_kdtree.query_ball_point(x=source_point, r=radius, eps=1.0)
+        #print(tree_cluster_indeces)
+
+        inactive_tree_cluster_indeces = [
+            tree_cluster_indeces[index] for index in np.where(self.inactive[tree_cluster_indeces])[0]
+        ]
         
-        inactive_tree_cluster_indeces = [tree_cluster_indeces[index] for index in np.nonzero(self.inactive[tree_cluster_indeces])[0]]
-        
-        self.cuts[cut_index] = np.concatenate([self.cuts[cut_index], np.array(inactive_tree_cluster_indeces, dtype=np.int32)])
+        #print(inactive_tree_cluster_indeces)
+        #print(self.tree_basins[inactive_tree_cluster_indeces])
+        #print(np.where(self.tree_basins[inactive_tree_cluster_indeces] == source_basin)[0])
+
+        valid_tree_cluster_indeces = [
+            inactive_tree_cluster_indeces[index] for index in np.where(self.tree_basins[inactive_tree_cluster_indeces] == source_basin)[0]
+        ]
+        #print(valid_tree_cluster_indeces)
+
+        self.cuts[cut_index] = np.concatenate([self.cuts[cut_index], np.array(valid_tree_cluster_indeces, dtype=np.int32)])
         self.update_cached[cut_index] = True
         
         self.inactive[inactive_tree_cluster_indeces] = False
@@ -190,6 +249,7 @@ class Cuts():
 
         
     def add_random_cluster(self):
+        #print("Add Random Cluster")
         if len(self.cuts) <= 0:
             return None
             
@@ -200,7 +260,7 @@ class Cuts():
         
         current_cut_length = len(self.cuts[cut_index])
         
-        self.add_cluster(cut_index, self.tree_points[source_index], random.randint(25, 75))
+        self.add_cluster(cut_index, source_index, random.randint(25, 75))
         
         return (cut_index, current_cut_length)
 
@@ -222,13 +282,14 @@ class Cuts():
         #print("Remove Cluster Cut Length {} Inactive Length {}".format(self.cuts[cut_index].shape, np.nonzero(self.inactive)[0].shape))
         
     def remove_cut(self, cut_index):
-        #print("Remove Cut Cuts Length {} Inactive Length {}".format(len(self.cuts), np.nonzero(self.inactive)[0].shape))
-            
-        cut = self.cuts.pop(cut_index)
+        #print("Remove Cut Cuts Length {} Inactive Length {}".format(len(self.cuts), np.nonzero(self.inactive)[0].shape)) 
+        
         self.values.pop(cut_index)
         self.update_cached.pop(cut_index)
         
-        self.closest_landing_points.pop(cut_index)
+        self.closest_landings.pop(cut_index)
+        self.landing_distances.pop(cut_index)
+        self.closest_landing_states.pop(cut_index)
                 
         self.felling_values.pop(cut_index)
         self.harvest_values.pop(cut_index)
@@ -236,13 +297,15 @@ class Cuts():
         self.felling_costs.pop(cut_index)
         self.processing_costs.pop(cut_index)
         self.skidding_costs.pop(cut_index)
-        
+
+        cut = self.cuts.pop(cut_index)
         self.inactive[cut] = True
         
         #print("Remove Cut Cuts Length {} Inactive Length {}".format(len(self.cuts), np.nonzero(self.inactive)[0].shape))
         return cut
 
     def remove_random_cut(self):
+        #print("Remove Random Cut")
         if len(self.cuts) <= 0:
             return None
 
@@ -250,7 +313,71 @@ class Cuts():
         cut = self.remove_cut(cut_index)
         
         return cut
+
+    def remove_orphaned_cuts(self):
+        #print(self.closest_landing_states)
+        orphaned_cut_indeces = np.where(self.closest_landing_states == ClosestLandingState.ORPHANED)[0]
+        #print(orphaned_cut_indeces)
+
+        for orphaned_cut_index in orphaned_cut_indeces:
+            self.remove_cut(orphaned_cut_index)
     
+    #TODO: Fix this
+    def compute_landing_distance(self, tree_point, tree_basin, landing):
+        landing_point_x, landing_point_y, landing_basin = landing
+        landing_point = (landing_point_x, landing_point_y)
+
+        landing_distance = 0
+        if tree_basin != landing_basin:
+            landing_distance += 1000
+
+        return landing_distance + euclidean(tree_point, landing_point)
+
+    def compute_landing_distances(self, tree_points, tree_basins, landing):
+        landing_point_x, landing_point_y, landing_basin = landing
+        landing_point = (landing_point_x, landing_point_y)
+
+        return np.linalg.norm(tree_points - landing_point, axis=1) + \
+            np.not_equal(tree_basins, landing_basin) * 1000
+
+    def update_closest_landing(self, cut_index, cut_tree_points, cut_tree_basins):            
+        cut_tree_points_length = float(len(cut_tree_points))
+        x_centroid = np.sum(cut_tree_points[:, 0]) / cut_tree_points_length
+        y_centroid = np.sum(cut_tree_points[:, 1]) / cut_tree_points_length
+        cut_basin = cut_tree_basins[0]
+        
+        center_point = (x_centroid, y_centroid)
+        center = (x_centroid, y_centroid, cut_basin)
+        
+        _, closest_landing_index = self.landing_point_manager.active_points_kdtree.query([center], eps=1.0)
+        closest_landing = self.landing_point_manager.active_points_kdtree.data[closest_landing_index][0]   
+        closest_landing = tuple(closest_landing)
+
+        current_landing = self.closest_landings[cut_index]
+        if closest_landing != current_landing:
+            # Closest landing has changed, check if we are now orphaned
+            new_landing_distance = self.compute_landing_distance(
+                center_point,
+                cut_basin,
+                closest_landing)
+            
+            if self.closest_landing_states[cut_index] != ClosestLandingState.UNKNOWN:
+                if new_landing_distance > 1000:
+                    # Our new landing is in a new basin, we've been orphaned!
+                    if self.landing_distances[cut_index] < 1000 and self.closest_landing_states[cut_index] == ClosestLandingState.KNOWN:
+                        #print("Orphaning cut {}".format(cut_index))
+                        self.closest_landing_states[cut_index] = ClosestLandingState.ORPHANED
+                else:
+                    # Our new landing is within our basin
+                    if self.closest_landing_states[cut_index] == ClosestLandingState.ORPHANED:
+                        #print("Resolving orphaned cut {}".format(cut_index))
+                        self.closest_landing_states[cut_index] = ClosestLandingState.KNOWN
+            else:
+                self.closest_landing_states[cut_index] = ClosestLandingState.KNOWN
+
+            self.closest_landings[cut_index] = closest_landing
+            self.landing_distances[cut_index] = new_landing_distance
+
     def get_cut_value(self, cut_index):
         if self.update_cached[cut_index]:
             cut = self.cuts[cut_index]
@@ -259,25 +386,14 @@ class Cuts():
             cut_tree_weights = self.tree_weights[cut]
             cut_tree_basins = self.tree_basins[cut]
             
-            cut_tree_points_length = float(len(cut_tree_points))
-            x_centroid = np.sum(cut_tree_points[:, 0]) / cut_tree_points_length
-            y_centroid = np.sum(cut_tree_points[:, 1]) / cut_tree_points_length
-            cut_basin = cut_tree_basins[0]
-        
-            center = (x_centroid, y_centroid, cut_basin)
-        
-            closest_landing_point_distance, closest_landing_point_index = self.landing_point_manager.active_points_kdtree.query([center], eps=1.0)
-            closest_landing_point = self.landing_point_manager.active_points_kdtree.data[closest_landing_point_index][0]   
-            
-            self.closest_landing_points[cut_index] = tuple(closest_landing_point)
-            
-            cut_tree_points_basins = np.column_stack((cut_tree_points, cut_tree_basins))
-            cut_tree_distances = np.linalg.norm(cut_tree_points_basins - closest_landing_point, axis=1)
-            
+            self.update_closest_landing(cut_index, cut_tree_points, cut_tree_basins)
+
+            cut_tree_distances = self.compute_landing_distances(cut_tree_points, cut_tree_basins, np.array(self.closest_landings[cut_index]))
+
             cut_tree_weights_gt = cut_tree_weights[cut_tree_weights >= 0.3]
             cut_tree_weights_lt = cut_tree_weights[cut_tree_weights < 0.3]
             
-            equipment_moving_cost = closest_landing_point_distance * 0.01
+            equipment_moving_cost = self.landing_distances[cut_index] * 0.01
             cut_felling_cost = np.sum(cut_tree_weights_lt * 12) + np.sum(cut_tree_weights_gt * 10)
             cut_processing_cost = np.sum(cut_tree_weights_gt * 15)
             cut_skidding_cost = np.sum(np.select([cut_tree_weights >= 0.3], [cut_tree_weights * (cut_tree_distances * 0.061 + 20)]))
@@ -298,7 +414,10 @@ class Cuts():
             self.update_cached[cut_index] = False
             
         #print(self.values[cut_index])
-        return self.values[cut_index]
+        if self.closest_landing_states[cut_index] == ClosestLandingState.ORPHANED:
+            return 0.0
+        else:
+            return self.values[cut_index]
     
     def compute_value(self):
         total_value = 0
@@ -309,7 +428,6 @@ class Cuts():
 
     def update_landings(self, active_landing_points):
         for cut_index, cut in enumerate(self.cuts):
-            #if self.closest_landing_points[cut_index] not in active_landing_points:
             self.update_cached[cut_index] = True
         
     def update_state(self):
@@ -329,7 +447,9 @@ class Cuts():
         writable.processing_costs = copy.copy(self.processing_costs)
         writable.skidding_costs = copy.copy(self.skidding_costs)
 
-        writable.closest_landing_points = copy.deepcopy(self.closest_landing_points)
+        writable.closest_landings = copy.deepcopy(self.closest_landings)
+        writable.landing_distances = copy.copy(self.landing_distances)
+        writable.closest_landing_states = copy.deepcopy(self.closest_landing_states)
         
         writable.update_cached = copy.copy(self.update_cached)
         
@@ -337,6 +457,16 @@ class Cuts():
         
         return writable
         
+    def to_json(self):
+        output_json = {}
+        for cut_index, cut in enumerate(self.cuts):
+            cut_json = {}
+            cut_json["fitness"] = self.values[cut_index] 
+
+    @classmethod
+    def from_json(cls, cut_json):
+        return
+
     def export(self, output_dir):
         cuts_output_dir = os.path.join(output_dir, "cuts")
         if not os.path.exists(cuts_output_dir):
@@ -364,7 +494,8 @@ class Cuts():
                 
             output_dict["num_trees"] = cut.size
             
-            output_dict["closest_landing_point"] = self.closest_landing_points[cut_index]
+            output_dict["closest_landing"] = self.closest_landings[cut_index]
+            output_dict["closest_landing_distance"] = self.landing_distances[cut_index]
             
             output_dict["felling_value"] = self.felling_values[cut_index]
             output_dict["harvest_value"] = self.harvest_values[cut_index]

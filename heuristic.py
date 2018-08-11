@@ -4,8 +4,8 @@ import random
         
 class SimulatedAnnealing():
     def __init__(self):
-        self.base_value = -1000000000.0
-        self.best_value = -1000000000.0
+        self.base_value = -100000.0
+        self.best_value = -100000.0
         
         
     def configure(self, temperature=0.25, min_temperature=0.0001, alpha=0.99, repetitions=100):
@@ -59,6 +59,7 @@ class RecordToRecord():
         if solution_value > self.best_value:
             self.best_value = solution_value
             self.best_solution = solution.copy_writable()
+
             self.final_solution = self.best_solution
 
     def continue_solving(self, iterations):
