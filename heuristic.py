@@ -9,7 +9,7 @@ class SimulatedAnnealing():
 
         self.iterations_since_improvement = 0
         
-    def configure(self, temperature=0.25, min_temperature=0.0001, alpha=0.99, repetitions=200):
+    def configure(self, temperature=0.1, min_temperature=0.00001, alpha=0.99, repetitions=200):
         self.temperature = temperature
         self.repetitions = repetitions
         self.alpha = alpha
@@ -64,7 +64,7 @@ class RecordToRecord():
         self.base_value = -1000000.0
         self.best_value = -1000000.0
 
-    def configure(self, deviation=0.05, max_iterations=100000):           
+    def configure(self, deviation=0.05, max_iterations=200000):           
         self.deviation = deviation
         self.max_iterations = max_iterations        
     

@@ -105,6 +105,16 @@ class Landings():
         with open(os.path.join(landings_output_dir, "landings.json"), 'w') as fp:
             json.dump(landings_dict, fp)
 
+    def to_json(self):
+        landings_json = {}
+        landings_json["active_landings"] = []
+        landings_json["component_type"] = "landings"
+
+        for landing in self.landings:
+            landings_json["active_landings"].append(landing.to_json())
+
+        return landings_json
+
     def __str__(self):
         return "{} Active Landings".format(len(self.landings))
 

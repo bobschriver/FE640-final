@@ -36,7 +36,6 @@ class Cuts():
         self.values = []
 
         self.update_cached = []
-        self.orphaned = []
 
         self.closest_landings = []
         self.landing_distances = []
@@ -340,11 +339,25 @@ class Cuts():
         return np.linalg.norm(tree_points - landing_point, axis=1) + \
             np.not_equal(tree_basins, landing_basin) * 1000
 
-    def update_closest_landing(self, cut_index, cut_tree_points, cut_tree_basins):            
+    def get_cut_centroid(self, cut_index):
+        cut = self.cuts[cut_index]
+        cut_tree_points = self.tree_points[cut]
+
         cut_tree_points_length = float(len(cut_tree_points))
         x_centroid = np.sum(cut_tree_points[:, 0]) / cut_tree_points_length
         y_centroid = np.sum(cut_tree_points[:, 1]) / cut_tree_points_length
-        cut_basin = cut_tree_basins[0]
+
+        return (x_centroid, y_centroid)
+
+    def get_cut_basin(self, cut_index):
+        cut = self.cuts[cut_index]
+        cut_tree_basins = self.tree_basins[cut]
+
+        return cut_tree_basins[0]
+
+    def update_closest_landing(self, cut_index, cut_tree_points, cut_tree_basins): 
+        x_centroid, y_centroid = self.get_cut_centroid(cut_index)
+        cut_basin = self.get_cut_basin(cut_index)
         
         center_point = (x_centroid, y_centroid)
         center = (x_centroid, y_centroid, cut_basin)
@@ -456,16 +469,6 @@ class Cuts():
         writable.forward_probabilities = copy.copy(self.forward_probabilities)
         
         return writable
-        
-    def to_json(self):
-        output_json = {}
-        for cut_index, cut in enumerate(self.cuts):
-            cut_json = {}
-            cut_json["fitness"] = self.values[cut_index] 
-
-    @classmethod
-    def from_json(cls, cut_json):
-        return
 
     def export(self, output_dir):
         cuts_output_dir = os.path.join(output_dir, "cuts")
@@ -477,8 +480,9 @@ class Cuts():
             
             output_dict["fitness"] = self.values[cut_index]
 
-            cut_tree_points_list = list(self.tree_points[cut])
 
+
+            cut_tree_points_list = list(self.tree_points[cut])
             if len(cut_tree_points_list) >= 3:
                 try:
                     hull = ConvexHull(cut_tree_points_list)
@@ -509,6 +513,55 @@ class Cuts():
        
             with open(os.path.join(cuts_output_dir, filename), 'w') as fp:
                 json.dump(output_dict, fp)
+
+    def to_json(self):
+        cuts_json = {}
+        cuts_json["component_type"] = "cuts"
+        cuts_json["active_cuts"] = []
+
+        for cut_index, cut in enumerate(self.cuts):
+            cut_json = {}
+            
+            x, y = self.get_cut_centroid(cut_index)
+            cut_json["x"] = float(x)
+            cut_json["y"] = float(y)
+            cut_json["basin"] = int(self.get_cut_basin(cut_index))
+
+            cut_json["fitness"] = float(self.values[cut_index])
+
+            cut_tree_points_list = list(self.tree_points[cut])
+
+            if len(cut_tree_points_list) >= 3:
+                try:
+                    hull = ConvexHull(cut_tree_points_list)
+                    hull_points = [tuple(cut_tree_points_list[index]) for index in hull.vertices]
+        
+                    cut_json["hull_points"] = hull_points
+                except:
+                    print("Invalid Hull")
+
+            cut_tree_weights = self.tree_weights[cut]
+            cut_json["harvest_weight"] = np.sum(cut_tree_weights[cut_tree_weights >= 0.3])
+            cut_json["non_harvest_weight"] = np.sum(cut_tree_weights[cut_tree_weights < 0.3])
+                
+            cut_json["num_trees"] = cut.size
+            
+            cut_json["closest_landing"] = self.closest_landings[cut_index]
+            cut_json["closest_landing_distance"] = self.landing_distances[cut_index]
+            
+            cut_json["felling_value"] = self.felling_values[cut_index]
+            cut_json["harvest_value"] = self.harvest_values[cut_index]
+            
+            cut_json["equipment_moving_cost"] = self.equipment_moving_costs[cut_index]
+            cut_json["felling_cost"] = self.felling_costs[cut_index]
+            cut_json["processing_cost"] = self.processing_costs[cut_index]
+            cut_json["skidding_cost"] = self.skidding_costs[cut_index]
+
+            cut_json["orphaned"] = self.closest_landing_states[cut_index] == ClosestLandingState.ORPHANED
+
+            cuts_json["active_cuts"].append(cut_json)
+        
+        return cuts_json
 
     def __str__(self):
         return "{} Active Cuts".format(len(self.cuts))

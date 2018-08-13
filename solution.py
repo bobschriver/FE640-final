@@ -5,6 +5,9 @@ from collections import deque
 
 class Solution():
     def __init__(self):
+        self.iterations = 0
+        self.value = 0.0
+
         self.forward_options = []  
         self.forward_probabilities = []
         self.reverse_map = {}
@@ -21,14 +24,16 @@ class Solution():
         self.components.append(component)
     
     def compute_value(self):
-        value = 0.0
+        self.value = 0.0
         
         for component in self.components:
-            value += component.compute_value()
+            self.value += component.compute_value()
         
-        return value
+        return self.value
         
     def forward(self):
+        self.iterations += 1
+
         # This means we haven't reversed since last moving forward aka a solution has been accepted
         if self.reverse_queue:
             self.reverse_queue.clear()
@@ -59,7 +64,19 @@ class Solution():
     def export(self, output_dir):
         for component in self.components:
             component.export(output_dir)
-            
+
+    def to_json(self):
+        solution_json = {}
+        solution_json["fitness"] = self.value
+        solution_json["iterations"] = self.iterations
+
+        solution_json["components"] = []
+
+        for component in self.components:
+            solution_json["components"].append(component.to_json())
+
+        return solution_json
+
     def copy_writable(self):
         writeable = Solution()
         
