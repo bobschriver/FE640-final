@@ -82,8 +82,8 @@ class Cuts():
         ]
 
         self.ending_forward_probabilites = [
+            0.7,
             1.0,
-            0.5,
             0.25,
             0.0,
             0.0001,

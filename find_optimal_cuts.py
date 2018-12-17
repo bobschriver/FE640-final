@@ -5,7 +5,7 @@ from landings import Landings
 from point_manager import PointManager
 
 from solution import Solution
-from heuristic import SimulatedAnnealing, RecordToRecord, ThresholdAccepting   
+from heuristic import SimulatedAnnealing, RecordToRecord  
 
 import os
 import csv
@@ -14,6 +14,7 @@ import sys
 import time
 import json
 import argparse
+import uuid
 
 import numpy as np
 
@@ -22,10 +23,13 @@ from scipy.spatial.distance import euclidean
 
 import boto3
 
+s3 = boto3.resource('s3')
+
 class Solver():
-    def __init__(self, heuristic, solution):
+    def __init__(self, heuristic, solution, output_dirname):
         self.heuristic = heuristic
         self.solution = solution
+        self.output_dirname = output_dirname
             
     def solve(self):
         iterations = 0
@@ -55,24 +59,32 @@ class Solver():
             if iterations % 1000 == 0:
                 print("{} Curr Value {} Base Value {} Best Value {} seconds {}".format(iterations, self.solution.compute_value(), self.heuristic.base_value, self.heuristic.best_value, time.time() - start_time))
                 print("Curr {}\tFinal {}".format(self.solution, self.heuristic.final_solution))
+                
+            if iterations % 1000 == 0:
                 iteration_fitnesses["current_value"][iterations] = self.heuristic.base_value
                 iteration_fitnesses["best_value"][iterations] = self.heuristic.best_value
                 start_time = time.time()
-            
+
+            if iterations % 10000 == 0:
+                current_solution_json = self.solution.to_json()
+                current_solution_path = os.path.join(bucket_dirname, "{}.json".format(int(current_solution_json["fitness"])))
+                current_solution_object = s3.Object("optimal-cuts", current_solution_path)
+                print("Writing current solution to {}".format(current_solution_path))
+                current_solution_object.put(Body=json.dumps(current_solution_json, indent=2))
 
         return (self.heuristic.final_solution, iteration_fitnesses)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--tree_points_path", dest="tree_points_path")
-parser.add_argument("--road_points_path", dest="road_points_path")         
+parser.add_argument("--tile_name", dest="tile_name")      
 parser.add_argument("--heuristic", dest="heuristic")
 parser.add_argument("--num_trials", dest="num_trials", default=100, type=int)
 parser.add_argument("--top_left", dest="top_left", default=(0, 0), type=tuple)
 
 args = parser.parse_args()
 
-tree_points_path = args.tree_points_path
-road_points_path = args.road_points_path
+tile_name = args.tile_name
+tree_points_path = "{}-trees.txt".format(tile_name)
+landing_points_path = "{}-landings.txt".format(tile_name)
 heuristic_type = args.heuristic
 num_trials = args.num_trials
 top_left_x, top_left_y = args.top_left
@@ -88,22 +100,23 @@ tree_basins = []
 
 with open(tree_points_path) as tree_points_file:
     tree_points_reader = csv.reader(tree_points_file)
-    tree_points_header = next(tree_points_reader)
-    
+    header = next(tree_points_reader)
+
+    x_index = header.index("x")
+    y_index = header.index("y")
+    elevation_index = header.index("elevation")
+    basin_index = header.index("basin")
+    height_index = header.index("height")
+
     for tree_point_line in tree_points_reader:
-        _, _, _, _, elev_str, basin_str, x_str, y_str, height_str = tree_point_line
-        #x = float(x_str) - top_left_x
-        #y = top_left_y - float(y_str)
-        x = float(x_str) - top_left_x
-        y = float(y_str) - top_left_y
-        
-        
-        height = float(height_str)
+        x = float(tree_point_line[x_index])
+        y = float(tree_point_line[y_index])
+
+        elevation = float(tree_point_line[elevation_index])
+        basin = int(tree_point_line[basin_index]) * 1000
+
+        height = float(tree_point_line[height_index])
         weight = height * 0.82 * 49.91 * 0.000454
-        
-        elevation = float(elev_str)
-        
-        basin = (int(basin_str) - min_basin) * 500
 
         tree_points.append((x, y))
         tree_basins.append(basin)
@@ -116,18 +129,21 @@ possible_tree_points_kdtree = KDTree(possible_tree_points_arr)
         
 road_points = []
 road_coordinates = []
-with open(road_points_path) as road_points_file:
-    road_points_reader = csv.reader(road_points_file)
-    road_points_header = next(road_points_reader)
-    
-    for road_point_line in road_points_reader:
-        _, _, _, x_str, y_str, elev_str, basin_str = road_point_line
+with open(landing_points_path) as landing_points_file:
+    landing_points_reader = csv.reader(landing_points_file)
+    header = next(landing_points_reader)
 
-        x = float(x_str) - top_left_x
-        y = float(y_str) - top_left_y
+    x_index = header.index("x")
+    y_index = header.index("y")
+    elevation_index = header.index("elevation")
+    basin_index = header.index("basin")
 
-        elevation = float(elev_str)
-        basin = (int(basin_str) - min_basin) * 500
+    for landing_point_line in landing_points_reader:
+        x = float(landing_point_line[x_index])
+        y = float(landing_point_line[y_index])
+
+        elevation = float(landing_point_line[elevation_index])
+        basin = int(landing_point_line[basin_index]) * 1000
 
         road_coordinates.append((x, y))
         road_points.append((x, y, basin))
@@ -142,13 +158,13 @@ tree_basins_arr = possible_tree_basin_arr[feasible_tree_indeces]
 tree_weights_arr = possible_tree_weights_arr[feasible_tree_indeces]
 tree_points_kdtree = KDTree(tree_points_arr) 
 
-if not os.path.exists(heuristic_type):
-        os.makedirs(heuristic_type)
-
-s3 = boto3.resource('s3')
-
 for j in range(num_trials):
     print("TRIAL {}".format(j))
+    trial_uuid = str(uuid.uuid4())
+
+    bucket_dirname = os.path.join("output", algorithm_name, heuristic_type, tile_name, trial_uuid)
+    os.makedirs(bucket_dirname)
+
     landing_point_manager = PointManager(set(()), set(road_points))        
   
     initial_cuts = Cuts(tree_points_arr, tree_points_kdtree, tree_weights_arr, tree_basins_arr, landing_point_manager)
@@ -170,19 +186,17 @@ for j in range(num_trials):
 
     heuristic.configure()
     
-    solver = Solver(heuristic, initial_solution)
+    solver = Solver(heuristic, initial_solution, bucket_dirname)
 
     final_solution, iteration_fitnesses = solver.solve()
     final_solution_json = final_solution.to_json()
 
-    solution_name = "{}_{}".format(j, int(final_solution.compute_value()))
-
-    final_solution_path = os.path.join("output", algorithm_name, heuristic_type, "{}.json".format(solution_name))
+    final_solution_path = os.path.join(bucket_dirname, "{}_final.json".format(int(final_solution_json["fitness"])))
     final_solution_object = s3.Object("optimal-cuts", final_solution_path)
     print("Writing final solution to {}".format(final_solution_path))
     final_solution_object.put(Body=json.dumps(final_solution_json, indent=2))
 
-    final_solution_fitnesses_object = s3.Object("optimal-cuts", os.path.join("output", algorithm_name, heuristic_type, "{}_iteration_fitnesses.json".format(solution_name)))
+    final_solution_fitnesses_object = s3.Object("optimal-cuts", os.path.join(bucket_dirname, "iteration_fitnesses.json"))
     final_solution_fitnesses_object.put(Body=json.dumps(iteration_fitnesses, indent=2))
 
 

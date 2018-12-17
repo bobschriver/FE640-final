@@ -79,6 +79,8 @@ class Solution():
 
     def copy_writable(self):
         writeable = Solution()
+        writeable.iterations = self.iterations
+        writeable.value = self.value
         
         for component in self.components:
             writeable.add_component(component.copy_writable())
